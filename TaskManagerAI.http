@@ -1,0 +1,6 @@
+@TaskManagerAI_HostAddress = http://localhost:5057
+
+GET {{TaskManagerAI_HostAddress}}/swagger/v1/swagger.json
+Accept: application/json
+
+###

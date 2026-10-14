@@ -1,0 +1,167 @@
+﻿Date/time: 2026-10-15 01:59:45 +08:00
+Model (appsettings.json): gemini-2.5-flash
+
+=== Requested LocalDB reset ===
+Request: TRUNCATE TABLE dbo.Tasks on (localdb)\MSSQLLocalDB, database TaskManagerAI
+HTTP status: FAILED
+Response body:
+LOCALDB_CONNECTION_FAILED: Exception calling "Open" with "0" argument(s): "A network-related or instance-specific error occurred while establishing a connection to SQL Server. The server was not found or was not accessible. Verify that the instance name is correct and that SQL Server is configured to allow remote connections. (provider: SQL Network Interfaces, error: 52 - Unable to locate a Local Database Runtime installation. Verify that SQL Server Express is properly installed and that the Local Database Runtime feature is enabled.)"
+
+=== Authorized SQLEXPRESS database reset ===
+Request: TRUNCATE TABLE dbo.Tasks on KLOUD-LAPTOP\SQLEXPRESS, database TaskManagerAI
+HTTP status: SUCCEEDED
+Response body:
+TRUNCATE TABLE dbo.Tasks succeeded; row_count=0; identity_current=1
+
+=== Happy path a: create task due next Friday ===
+Request: POST http://localhost:5057/api/assistant
+Request body: {"message":"Add a task called \u0027Call dentist\u0027 due next Friday"}
+HTTP status: 503
+Response body:
+{"action":"none","result":"Gemini returned HTTP status 404.","data":null}
+
+=== Happy path a: date verification ===
+Request: Get-Date; calculate the next Friday strictly after 2026-10-15; compare with the dueDate in the preceding API response
+HTTP status: CHECKED
+Response body:
+Today=2026-10-15; nextFriday=2026-10-16; API_dueDate=; matches=False
+
+=== Happy path b: mark task 1 done ===
+Request: POST http://localhost:5057/api/assistant
+Request body: {"message":"Mark task 1 as done"}
+HTTP status: 503
+Response body:
+{"action":"none","result":"Gemini returned HTTP status 404.","data":null}
+
+=== Happy path c: list tasks not done ===
+Request: POST http://localhost:5057/api/assistant
+Request body: {"message":"Show me everything that\u0027s not done yet"}
+HTTP status: 503
+Response body:
+{"action":"none","result":"Gemini returned HTTP status 404.","data":null}
+
+=== Error 1: out of scope ===
+Request: POST http://localhost:5057/api/assistant
+Request body: {"message":"What\u0027s the capital of France?"}
+HTTP status: 503
+Response body:
+{"action":"none","result":"Gemini returned HTTP status 404.","data":null}
+
+=== Error 2: nonexistent task ===
+Request: POST http://localhost:5057/api/assistant
+Request body: {"message":"Mark task 999 as done"}
+HTTP status: 503
+Response body:
+{"action":"none","result":"Gemini returned HTTP status 404.","data":null}
+
+=== Error 3: create Finish report ===
+Request: POST http://localhost:5057/api/assistant
+Request body: {"message":"Add a task called \u0027Finish report\u0027"}
+HTTP status: 503
+Response body:
+{"action":"none","result":"Gemini returned HTTP status 404.","data":null}
+
+=== Error 3: create Review report ===
+Request: POST http://localhost:5057/api/assistant
+Request body: {"message":"Add a task called \u0027Review report\u0027"}
+HTTP status: 503
+Response body:
+{"action":"none","result":"Gemini returned HTTP status 404.","data":null}
+
+=== Error 3: ambiguous delete ===
+Request: POST http://localhost:5057/api/assistant
+Request body: {"message":"Delete the report task"}
+HTTP status: 503
+Response body:
+{"action":"none","result":"Gemini returned HTTP status 404.","data":null}
+
+=== Error 3: verify tasks remain after ambiguous delete ===
+Request: GET http://localhost:5057/api/tasks
+HTTP status: 200
+Response body:
+[]
+
+=== Error 4a: missing title - Add a task ===
+Request: POST http://localhost:5057/api/assistant
+Request body: {"message":"Add a task"}
+HTTP status: 503
+Response body:
+{"action":"none","result":"Gemini returned HTTP status 404.","data":null}
+
+=== Error 4b: missing title - no name ===
+Request: POST http://localhost:5057/api/assistant
+Request body: {"message":"Create a task with no name"}
+HTTP status: 503
+Response body:
+{"action":"none","result":"Gemini returned HTTP status 404.","data":null}
+
+=== Error 4c: missing title - no title ===
+Request: POST http://localhost:5057/api/assistant
+Request body: {"message":"Add a task with no title"}
+HTTP status: 503
+Response body:
+{"action":"none","result":"Gemini returned HTTP status 404.","data":null}
+
+=== Error 6: SQL-looking title ===
+Request: POST http://localhost:5057/api/assistant
+Request body: {"message":"Add a task called \u0027); DROP TABLE Tasks;--"}
+HTTP status: 503
+Response body:
+{"action":"none","result":"Gemini returned HTTP status 404.","data":null}
+
+=== Error 6: verify tasks table and stored title ===
+Request: GET http://localhost:5057/api/tasks
+HTTP status: 200
+Response body:
+[]
+
+=== Delete confirmation: create target task ===
+Request: POST http://localhost:5057/api/assistant
+Request body: {"message":"Add a task called \u0027Temporary delete confirmation target\u0027"}
+HTTP status: 503
+Response body:
+{"action":"none","result":"Gemini returned HTTP status 404.","data":null}
+
+=== Delete confirmation: request delete and capture token ===
+Request: POST http://localhost:5057/api/assistant
+Request body: {"message":"Delete task called \u0027Temporary delete confirmation target\u0027"}
+HTTP status: 503
+Response body:
+{"action":"none","result":"Gemini returned HTTP status 404.","data":null}
+
+=== Delete confirmation: token-dependent steps ===
+Request: Use confirmationToken from the preceding delete request
+HTTP status: NOT RUN
+Response body:
+The preceding API response did not contain a confirmationToken.
+
+=== Delete confirmation: create cancellation target ===
+Request: POST http://localhost:5057/api/assistant
+Request body: {"message":"Add a task called \u0027Keep this task after cancellation\u0027"}
+HTTP status: 503
+Response body:
+{"action":"none","result":"Gemini returned HTTP status 404.","data":null}
+
+=== Delete confirmation: request delete for cancellation ===
+Request: POST http://localhost:5057/api/assistant
+Request body: {"message":"Delete task called \u0027Keep this task after cancellation\u0027"}
+HTTP status: 503
+Response body:
+{"action":"none","result":"Gemini returned HTTP status 404.","data":null}
+
+=== Delete confirmation: confirm false step ===
+Request: Use confirmationToken from the preceding cancellation delete request with confirm=false
+HTTP status: NOT RUN
+Response body:
+The preceding API response did not contain a confirmationToken.
+
+Date/time: 2026-10-15 02:04:39 +08:00
+Model (appsettings.json): gemini-2.5-flash
+
+=== Case 5: show all tasks (invalid API key) ===
+Request: POST http://localhost:5057/api/assistant
+Request body: {"message":"Show me all tasks"}
+HTTP status: 503
+Response body:
+{"action":"none","result":"Gemini returned HTTP status 400.","data":null,"confirmationToken":null}
+
