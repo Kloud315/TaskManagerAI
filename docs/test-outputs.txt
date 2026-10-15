@@ -1,4 +1,4 @@
-Validation date/time: 2026-10-15 14:15:21 +08:00
+Validation date/time: 2026-10-15 14:24:50 +08:00
 Model: gemini-3.1-flash-lite
 
 === Read existing tasks before the test ===
@@ -25,21 +25,21 @@ Request: POST /api/assistant
 Body: {"message":"Add a task called \u0027Finish report\u0027 due next Friday"}
 HTTP status: 200
 Response:
-{"action":"create_task","result":"Created task 22: \"Finish report\".","data":{"id":22,"title":"Finish report","isDone":false,"dueDate":"2026-10-23T00:00:00"},"confirmationToken":null}
+{"action":"create_task","result":"Created task 28: \"Finish report\".","data":{"id":28,"title":"Finish report","isDone":false,"dueDate":"2026-10-23T00:00:00"},"confirmationToken":null}
 
 === Create a task through the assistant ===
 Request: POST /api/assistant
-Body: {"message":"Add a task called \u0027API smoke test b34a914831d4496c8cf03459e75eb9a2\u0027 due 2026-10-22"}
+Body: {"message":"Add a task called \u0027API smoke test de7aad60b6af47df8aa8704d86914407\u0027 due 2026-10-22"}
 HTTP status: 200
 Response:
-{"action":"create_task","result":"Created task 23: \"API smoke test b34a914831d4496c8cf03459e75eb9a2\".","data":{"id":23,"title":"API smoke test b34a914831d4496c8cf03459e75eb9a2","isDone":false,"dueDate":"2026-10-22T00:00:00"},"confirmationToken":null}
+{"action":"create_task","result":"Created task 29: \"API smoke test de7aad60b6af47df8aa8704d86914407\".","data":{"id":29,"title":"API smoke test de7aad60b6af47df8aa8704d86914407","isDone":false,"dueDate":"2026-10-22T00:00:00"},"confirmationToken":null}
 
 === Mark the created task complete through the assistant ===
 Request: POST /api/assistant
-Body: {"message":"Mark task 23 as done"}
+Body: {"message":"Mark task 29 as done"}
 HTTP status: 200
 Response:
-{"action":"update_task","result":"Updated task 23.","data":{"id":23,"title":"API smoke test b34a914831d4496c8cf03459e75eb9a2","isDone":true,"dueDate":"2026-10-22T00:00:00"},"confirmationToken":null}
+{"action":"update_task","result":"Updated task 29.","data":{"id":29,"title":"API smoke test de7aad60b6af47df8aa8704d86914407","isDone":true,"dueDate":"2026-10-22T00:00:00"},"confirmationToken":null}
 
 === Request a task that does not exist ===
 Request: POST /api/assistant
@@ -57,85 +57,85 @@ Response:
 
 === Store a SQL-looking title as ordinary text ===
 Request: POST /api/assistant
-Body: {"message":"Add a task with the exact title \u0027SQL probe b790764ee02d4fd2ae3f38b07421b574 ; DROP TABLE Tasks;--\u0027"}
+Body: {"message":"Add a task with the exact title \u0027SQL probe f014f9df9ea142209fac033a1c1b2c7c ; DROP TABLE Tasks;--\u0027"}
 HTTP status: 200
 Response:
-{"action":"create_task","result":"Created task 24: \"SQL probe b790764ee02d4fd2ae3f38b07421b574 ; DROP TABLE Tasks;--\".","data":{"id":24,"title":"SQL probe b790764ee02d4fd2ae3f38b07421b574 ; DROP TABLE Tasks;--","isDone":false,"dueDate":null},"confirmationToken":null}
+{"action":"create_task","result":"Created task 30: \"SQL probe f014f9df9ea142209fac033a1c1b2c7c ; DROP TABLE Tasks;--\".","data":{"id":30,"title":"SQL probe f014f9df9ea142209fac033a1c1b2c7c ; DROP TABLE Tasks;--","isDone":false,"dueDate":null},"confirmationToken":null}
 
 === Read back the SQL-looking title ===
-Request: GET /api/tasks/24
+Request: GET /api/tasks/30
 HTTP status: 200
 Response:
-{"id":24,"title":"SQL probe b790764ee02d4fd2ae3f38b07421b574 ; DROP TABLE Tasks;--","isDone":false,"dueDate":null}
+{"id":30,"title":"SQL probe f014f9df9ea142209fac033a1c1b2c7c ; DROP TABLE Tasks;--","isDone":false,"dueDate":null}
 
 === Create a task for the ambiguity test using CRUD ===
 Request: POST /api/tasks
-Body: {"isDone":false,"title":"ambiguity-79a8b5e1 report - Finish"}
+Body: {"isDone":false,"title":"ambiguity-5c63329f report - Finish"}
 HTTP status: 201
 Response:
-{"id":25,"title":"ambiguity-79a8b5e1 report - Finish","isDone":false,"dueDate":null}
+{"id":31,"title":"ambiguity-5c63329f report - Finish","isDone":false,"dueDate":null}
 
 === Create a task for the ambiguity test using CRUD ===
 Request: POST /api/tasks
-Body: {"isDone":false,"title":"ambiguity-79a8b5e1 report - Review"}
+Body: {"isDone":false,"title":"ambiguity-5c63329f report - Review"}
 HTTP status: 201
 Response:
-{"id":26,"title":"ambiguity-79a8b5e1 report - Review","isDone":false,"dueDate":null}
+{"id":32,"title":"ambiguity-5c63329f report - Review","isDone":false,"dueDate":null}
 
 === Reject an ambiguous title-based deletion ===
 Request: POST /api/assistant
-Body: {"message":"Delete the ambiguity-79a8b5e1 report task"}
+Body: {"message":"Delete the ambiguity-5c63329f report task"}
 HTTP status: 409
 Response:
-{"action":"none","result":"I found multiple matching tasks: 25: \"ambiguity-79a8b5e1 report - Finish\"; 26: \"ambiguity-79a8b5e1 report - Review\". Please specify the task ID.","data":[{"id":25,"title":"ambiguity-79a8b5e1 report - Finish","isDone":false,"dueDate":null},{"id":26,"title":"ambiguity-79a8b5e1 report - Review","isDone":false,"dueDate":null}],"confirmationToken":null}
+{"action":"none","result":"I found multiple matching tasks: 31: \"ambiguity-5c63329f report - Finish\"; 32: \"ambiguity-5c63329f report - Review\". Please specify the task ID.","data":[{"id":31,"title":"ambiguity-5c63329f report - Finish","isDone":false,"dueDate":null},{"id":32,"title":"ambiguity-5c63329f report - Review","isDone":false,"dueDate":null}],"confirmationToken":null}
 
 === Create a task for the delete-confirmation test using CRUD ===
 Request: POST /api/tasks
-Body: {"isDone":false,"title":"confirmation-6467803858544aadaa288eeb78897546"}
+Body: {"isDone":false,"title":"confirmation-e046ff4d68f74375a1e317bb43614fca"}
 HTTP status: 201
 Response:
-{"id":27,"title":"confirmation-6467803858544aadaa288eeb78897546","isDone":false,"dueDate":null}
+{"id":33,"title":"confirmation-e046ff4d68f74375a1e317bb43614fca","isDone":false,"dueDate":null}
 
 === Request deletion by task ID ===
 Request: POST /api/assistant
-Body: {"message":"Delete task 27"}
+Body: {"message":"Delete task 33"}
 HTTP status: 200
 Response:
-{"action":"delete_task","result":"Please confirm deletion of task 27: \"confirmation-6467803858544aadaa288eeb78897546\". The confirmation expires in 5 minutes.","data":{"id":27,"title":"confirmation-6467803858544aadaa288eeb78897546","isDone":false,"dueDate":null},"confirmationToken":"2B02B0922A88B5C7286C65BB22FF609B668561AAF13941AEC619A06280E64AED"}
+{"action":"delete_task","result":"Please confirm deletion of task 33: \"confirmation-e046ff4d68f74375a1e317bb43614fca\". The confirmation expires in 5 minutes.","data":{"id":33,"title":"confirmation-e046ff4d68f74375a1e317bb43614fca","isDone":false,"dueDate":null},"confirmationToken":"[REDACTED]"}
 
 === Confirm deletion with the returned token ===
 Request: POST /api/assistant/confirm-delete
-Body: {"confirmationToken":"2B02B0922A88B5C7286C65BB22FF609B668561AAF13941AEC619A06280E64AED","confirm":true}
+Body: {"confirmationToken":"[REDACTED]","confirm":true}
 HTTP status: 200
 Response:
-{"action":"delete_task","result":"Deleted task 27: \"confirmation-6467803858544aadaa288eeb78897546\".","data":{"id":27,"title":"confirmation-6467803858544aadaa288eeb78897546","isDone":false,"dueDate":null},"confirmationToken":null}
+{"action":"delete_task","result":"Deleted task 33: \"confirmation-e046ff4d68f74375a1e317bb43614fca\".","data":{"id":33,"title":"confirmation-e046ff4d68f74375a1e317bb43614fca","isDone":false,"dueDate":null},"confirmationToken":null}
 
-=== Remove only test-created task 22 ===
-Request: DELETE /api/tasks/22
+=== Remove only test-created task 28 ===
+Request: DELETE /api/tasks/28
 HTTP status: 204
 Response:
 
 
-=== Remove only test-created task 23 ===
-Request: DELETE /api/tasks/23
+=== Remove only test-created task 29 ===
+Request: DELETE /api/tasks/29
 HTTP status: 204
 Response:
 
 
-=== Remove only test-created task 24 ===
-Request: DELETE /api/tasks/24
+=== Remove only test-created task 30 ===
+Request: DELETE /api/tasks/30
 HTTP status: 204
 Response:
 
 
-=== Remove only test-created task 25 ===
-Request: DELETE /api/tasks/25
+=== Remove only test-created task 31 ===
+Request: DELETE /api/tasks/31
 HTTP status: 204
 Response:
 
 
-=== Remove only test-created task 26 ===
-Request: DELETE /api/tasks/26
+=== Remove only test-created task 32 ===
+Request: DELETE /api/tasks/32
 HTTP status: 204
 Response:
 
@@ -144,4 +144,3 @@ Response:
 Request: GET /api/tasks
 HTTP status: 200
 Response: 1 task(s); test tasks remaining: 0.
-
