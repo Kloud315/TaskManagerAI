@@ -4,6 +4,7 @@ public enum AssistantOutcomeStatus
 {
     Success,
     OutOfScope,
+    ClarificationNeeded,
     InvalidArguments,
     NotFound,
     Ambiguous,

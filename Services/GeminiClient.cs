@@ -17,7 +17,10 @@ public class GeminiClient : IGeminiClient
         If a task is referred to by title rather than by ID, call list_tasks to find matches
         before choosing an ID. If multiple tasks match a request to change one task, ask the
         user to specify the ID. Do not guess task IDs or claim a task was changed unless the
-        matching function was called. If the request is unrelated to tasks, say so briefly.
+        matching function was called. If a task-related request is missing required
+        information, do not call a function; ask one short, clear clarifying question.
+        If the request is unrelated to task management, respond with exactly OUT_OF_SCOPE
+        and no other text.
         """;
 
     private readonly HttpClient _httpClient;
@@ -190,8 +193,13 @@ public class GeminiClient : IGeminiClient
 
             if (proposal is not null)
             {
-                throw new GeminiUnavailableException(
-                    "Gemini proposed multiple functions in one response. Please try again.");
+                return new GeminiTurn(
+                    null,
+                    content.Clone(),
+                    string.Empty)
+                {
+                    ContainsMultipleFunctionCalls = true
+                };
             }
 
             if (functionCall.ValueKind != JsonValueKind.Object

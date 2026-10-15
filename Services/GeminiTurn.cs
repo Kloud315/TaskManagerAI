@@ -5,4 +5,7 @@ namespace TaskManagerAI.Services;
 public sealed record GeminiTurn(
     FunctionCallProposal? FunctionCall,
     JsonElement ModelContent,
-    string Text);
+    string Text)
+{
+    public bool ContainsMultipleFunctionCalls { get; init; }
+}

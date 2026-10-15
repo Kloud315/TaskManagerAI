@@ -46,6 +46,14 @@ public class AssistantService
                     exception.Message);
             }
 
+            if (turn.ContainsMultipleFunctionCalls)
+            {
+                return CreateOutcome(
+                    AssistantOutcomeStatus.CouldNotComplete,
+                    "none",
+                    "Please ask for one action at a time.");
+            }
+
             if (turn.FunctionCall is null)
             {
                 if (lastListOutcome is not null)
@@ -57,6 +65,19 @@ public class AssistantService
                             "list_tasks",
                             turn.Text,
                             lastListOutcome.Data);
+                }
+
+                var responseText = turn.Text.Trim();
+                if (responseText.Length > 0
+                    && !string.Equals(
+                        responseText,
+                        "OUT_OF_SCOPE",
+                        StringComparison.OrdinalIgnoreCase))
+                {
+                    return CreateOutcome(
+                        AssistantOutcomeStatus.ClarificationNeeded,
+                        "none",
+                        responseText);
                 }
 
                 return CreateOutcome(
@@ -120,6 +141,16 @@ public class AssistantService
                 continue;
             }
 
+            if (titleMatchesFromLookup is null
+                && (proposal.Name is "update_task" or "delete_task" or "get_task")
+                && !IsProposedIdGroundedInMessage(message, proposal.Arguments))
+            {
+                return CreateOutcome(
+                    AssistantOutcomeStatus.Ambiguous,
+                    "none",
+                    "I couldn't tell which task you mean. Please give the task ID, or a more specific title.");
+            }
+
             return await _toolExecutor.ExecuteTaskFunctionAsync(
                 proposal,
                 titleMatchesFromLookup,
@@ -134,11 +165,38 @@ public class AssistantService
 
     private static bool IsMutationIntent(string message)
     {
+        if (System.Text.RegularExpressions.Regex.IsMatch(
+                message,
+                @"^\s*(show|list|what|which|find)\b",
+                System.Text.RegularExpressions.RegexOptions.IgnoreCase
+                    | System.Text.RegularExpressions.RegexOptions.CultureInvariant))
+        {
+            return false;
+        }
+
         return System.Text.RegularExpressions.Regex.IsMatch(
             message,
             @"\b(delete|remove|mark|complete|update|change|rename|set)\b",
             System.Text.RegularExpressions.RegexOptions.IgnoreCase
                 | System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+    }
+
+    private static bool IsProposedIdGroundedInMessage(
+        string message,
+        System.Text.Json.JsonElement arguments)
+    {
+        if (arguments.ValueKind != System.Text.Json.JsonValueKind.Object
+            || !arguments.TryGetProperty("id", out var idElement)
+            || idElement.ValueKind != System.Text.Json.JsonValueKind.Number
+            || !idElement.TryGetInt32(out var id))
+        {
+            return true;
+        }
+
+        return System.Text.RegularExpressions.Regex.IsMatch(
+            message,
+            $@"(?<!\d){id}(?!\d)",
+            System.Text.RegularExpressions.RegexOptions.CultureInvariant);
     }
 
     public Task<AssistantOutcome> ConfirmDeleteAsync(

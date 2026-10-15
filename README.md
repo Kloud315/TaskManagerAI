@@ -11,13 +11,19 @@ A .NET 8 Web API for managing tasks with regular CRUD endpoints and a natural-la
 
 ## Run locally
 
-1. Open a terminal in the project folder and restore packages:
+1. Open a terminal in the project folder and restore the solution:
 
    ```powershell
-   dotnet restore
+   dotnet restore TaskManagerAI.sln
    ```
 
-2. Create the local database and `Tasks` table. With `sqlcmd` installed, run:
+2. Build the solution:
+
+   ```powershell
+   dotnet build TaskManagerAI.sln
+   ```
+
+3. Create the local database and `Tasks` table. With `sqlcmd` installed, run:
 
    ```powershell
    sqlcmd -S "(localdb)\MSSQLLocalDB" -d master -i Data\schema.sql
@@ -25,33 +31,39 @@ A .NET 8 Web API for managing tasks with regular CRUD endpoints and a natural-la
 
    Alternatively, open `Data\schema.sql` in SSMS connected to `(localdb)\MSSQLLocalDB` and execute it. The script creates the `TaskManagerAI` database and `dbo.Tasks` table if they do not already exist.
 
-3. Store the Gemini key in .NET User Secrets (replace the example value locally; do not put a real key in source control):
+4. Store the Gemini key in .NET User Secrets (replace the example value locally; do not put a real key in source control):
 
    ```powershell
-   dotnet user-secrets set "Gemini:ApiKey" "YOUR_GEMINI_API_KEY"
+   dotnet user-secrets set "Gemini:ApiKey" "YOUR_GEMINI_API_KEY" --project TaskManagerAI.csproj
    ```
 
    The project also reads the optional `Gemini:Model` setting from configuration. The configured model is `gemini-3.1-flash-lite`. The committed connection string targets LocalDB; for a different SQL Server instance, keep the connection string out of source control and set it in User Secrets:
 
    ```powershell
-   dotnet user-secrets set "ConnectionStrings:DefaultConnection" "YOUR_SQL_SERVER_CONNECTION_STRING"
+   dotnet user-secrets set "ConnectionStrings:DefaultConnection" "YOUR_SQL_SERVER_CONNECTION_STRING" --project TaskManagerAI.csproj
    ```
 
-4. Start the API:
+5. Start the API:
 
    ```powershell
-   dotnet run
+   dotnet run --project TaskManagerAI.csproj
    ```
 
    With the development launch profile, Swagger UI is available at `https://localhost:7230/swagger` or `http://localhost:5057/swagger`.
 
-5. Run the non-destructive assistant smoke test and refresh the recorded responses:
+6. Run the tests:
+
+   ```powershell
+   dotnet test TaskManagerAI.sln
+   ```
+
+7. Run the assistant smoke test and refresh the recorded responses:
 
    ```powershell
    .\docs\test-api.ps1
    ```
 
-   The script creates a uniquely named task, tests create/update/not-found assistant flows, and deletes only the task it created. Pass `-LeaveDemoTask` if you want to keep that test task.
+   The script creates uniquely named test tasks and removes those tasks after the run. It tests assistant listing, creation, update, clarification, missing-task, out-of-scope, SQL-looking-title, ambiguous-delete, and confirmed-delete flows. Pass `-LeaveDemoTask` if you want to retain test-created tasks.
 
 ## API routes
 
@@ -116,25 +128,49 @@ Deletion is a two-step operation: the assistant API can return a short-lived `co
 
 ## Why Gemini (and which model)
 
-The project uses Gemini function calling to interpret natural-language task requests and propose calls to the task functions declared by the API. The configured model is `gemini-3.1-flash-lite` (`appsettings.json`), which was confirmed to be available and to return structured function calls during validation. `gemini-2.5-flash` was no longer available to new users.
+The project uses Gemini function calling to interpret natural-language task requests and propose calls to the task functions declared by the API. Its free tier and native structured function-calling support suit this small take-home project, and it does not require users to run a local model as Ollama does. Groq is also a reasonable hosted alternative, but Gemini was the selected provider for this implementation. The configured model is `gemini-3.1-flash-lite` (`appsettings.json`), which was confirmed to be available and to return structured function calls during validation. The trade-off is that model availability and generated outputs can change over time.
 
 ## Trade-offs and limitations
 
-- Title-based mutations use the model's filtered `list_tasks` results. The server now rejects a clear mutation request if that lookup returns zero or multiple matches, even if the model continues with more tool calls. The model still has to identify a useful title filter.
-- Pending deletion tokens are stored in memory, expire after five minutes, and are lost when the API process restarts.
+- The assistant has no multi-turn memory: each request is interpreted on its own and users must repeat task context in follow-up requests.
+- Title-based mutations use the model's filtered `list_tasks` results. A clear mutation request is rejected if that lookup returns zero or multiple matches, even if the model continues with more tool calls. The model still has to identify a useful title filter; listing-style questions are not treated as mutations just because they contain a mutation keyword.
+- Pending deletion confirmation tokens are single-use, expire after five minutes, and are stored in memory. They are lost when the API process restarts.
+- A pending delete confirmation stores the task ID and title at proposal time and does not re-check that the task is unchanged when confirmed; production would compare a row version.
+- `list_tasks` loads all rows and filters in memory, which is fine at this scale; production would filter in SQL with parameters and paginate.
 - The assistant depends on the Gemini API. Its natural-language output and function-call choices can vary between runs, and provider failures prevent the task operation from being exercised.
-- The recorded run used ADO.NET, as required by the exam, even though the rubric mentions EF Core. The repository uses `SqlConnection` and `SqlCommand` with SQL parameters.
+- The exam's rubric text mentions EF Core, but Section 4 requires ADO.NET with no ORM, so this project uses ADO.NET. The repository uses `SqlConnection` and `SqlCommand` with SQL parameters.
 
 ## Error handling
 
 - `ToolExecutor` validates function names, allowed properties, required titles and IDs, value types, date formats, and update fields before calling the task service. Invalid arguments map to HTTP 400; [`CreateTaskWithoutTitle_IsRejected`](./TaskManagerAI.Tests/ToolExecutorTests.cs) verifies a title-less create proposal does not reach task creation.
 - A missing task maps to HTTP 404. For clear mutation intents such as delete, update, or mark, title-based operations require a preceding filtered `list_tasks` call; zero matches return HTTP 404 and multiple matches return HTTP 409 before the model can select a task.
-- Requests outside the task scope are politely rejected when Gemini returns text without a function call. Gemini unavailability and timeouts map to HTTP 503. The client retries transient HTTP 429/503 responses twice before reporting a provider failure.
+- When the model proposes an update, delete, or get ID without a title lookup, that ID must appear as a standalone number in the user's message. Otherwise the request is rejected with HTTP 409 and asks the user to provide the ID or a more specific title.
+- Empty Gemini text or the exact `OUT_OF_SCOPE` marker is returned as a polite out-of-scope response; other text without a function call is treated as a clarifying question. Both use HTTP 200. Gemini unavailability and timeouts map to HTTP 503. The client retries transient HTTP 429/503 responses twice before reporting a provider failure.
 - The repository sends values as SQL parameters through ADO.NET; it does not try to sanitize SQL-looking task text.
+
+## Confirm or cancel a deletion
+
+When `POST /api/assistant` proposes a deletion, copy its `confirmationToken` from the response. Use the token once with either `confirm: true` to delete or `confirm: false` to cancel:
+
+```powershell
+$confirmationToken = '<confirmationToken from the assistant response>'
+
+# Confirm the deletion:
+Invoke-RestMethod -Method Post `
+  -Uri 'http://localhost:5057/api/assistant/confirm-delete' `
+  -ContentType 'application/json' `
+  -Body (@{ confirmationToken = $confirmationToken; confirm = $true } | ConvertTo-Json)
+
+# Alternatively, cancel it (do not submit both requests with the same token):
+Invoke-RestMethod -Method Post `
+  -Uri 'http://localhost:5057/api/assistant/confirm-delete' `
+  -ContentType 'application/json' `
+  -Body (@{ confirmationToken = $confirmationToken; confirm = $false } | ConvertTo-Json)
+```
 
 ## Example interactions
 
-The following are actual `/api/assistant` responses recorded in [`docs/test-outputs.txt`](./docs/test-outputs.txt) on **2026-10-15** using `gemini-3.1-flash-lite`. The create and update requests were verified through the CRUD API; the temporary smoke-test task was removed after verification.
+The following are actual `/api/assistant` responses recorded in [`docs/test-outputs.txt`](./docs/test-outputs.txt) on **2026-10-15** using `gemini-3.1-flash-lite`. The temporary smoke-test task was removed after verification. These responses are recorded in docs/test-outputs.txt.
 
 ### Create a task with a due date
 
@@ -179,6 +215,40 @@ The smoke test created and read back a title containing `; DROP TABLE Tasks;--`;
 ### Error case: ambiguous title-based deletion
 
 The smoke test creates two tasks sharing a unique title fragment, then requests a deletion by that fragment. The assistant returns HTTP 409 with both matching IDs and does not delete either task. Exact responses are in [`docs/test-outputs.txt`](./docs/test-outputs.txt).
+
+### Additional smoke-test coverage
+
+The automated smoke-test script also checks incomplete-task listing, date interpretation
+for "next Friday", a missing-title clarification, ambiguous title matching, and the
+two-step delete-confirmation flow. It asserts the expected status and response fields
+and writes the run's actual HTTP exchanges to `docs/test-outputs.txt`. The checked-in
+record above contains representative successful and error responses; run the script
+locally to generate fresh evidence for all of these additional cases.
+
+### Manual check: Gemini unavailable
+
+Temporarily set the `Gemini:ApiKey` .NET User Secret to an empty value, restart the API, and call `POST /api/assistant` with `{"message":"List my tasks"}`. The endpoint should return HTTP 503. For example:
+
+```powershell
+dotnet user-secrets set "Gemini:ApiKey" "" --project TaskManagerAI.csproj
+curl.exe -i -X POST http://localhost:5057/api/assistant `
+  -H "Content-Type: application/json" `
+  -d '{"message":"List my tasks"}'
+```
+
+Restore your actual key in User Secrets afterward; do not put it in the repository.
+This failure case is documented but is not part of the checked-in smoke-test run.
+The expected status is `503 Service Unavailable`; the response has the standard
+assistant shape, for example:
+
+```json
+{
+  "action": "none",
+  "result": "The Gemini API key is not configured. Add it with .NET User Secrets.",
+  "data": null,
+  "confirmationToken": null
+}
+```
 
 ## Short answers
 

@@ -83,32 +83,7 @@ public class ToolExecutor
     public AssistantOutcome? ValidateTitleMatchesForMutation(
         List<TaskItem>? titleMatches)
     {
-        if (titleMatches is null)
-        {
-            return null;
-        }
-
-        if (titleMatches.Count == 0)
-        {
-            return CreateOutcome(
-                AssistantOutcomeStatus.NotFound,
-                "none",
-                "No task matched that title.");
-        }
-
-        if (titleMatches.Count > 1)
-        {
-            var choices = string.Join(
-                "; ",
-                titleMatches.Select(task => $"{task.Id}: \"{task.Title}\""));
-            return CreateOutcome(
-                AssistantOutcomeStatus.Ambiguous,
-                "none",
-                $"I found multiple matching tasks: {choices}. Please specify the task ID.",
-                titleMatches);
-        }
-
-        return null;
+        return titleMatches is null ? null : ValidateTitleMatchCount(titleMatches);
     }
 
     public async Task<AssistantOutcome> ExecuteTaskFunctionAsync(
@@ -413,6 +388,26 @@ public class ToolExecutor
             return null;
         }
 
+        var matchCountOutcome = ValidateTitleMatchCount(titleMatches);
+        if (matchCountOutcome is not null)
+        {
+            return matchCountOutcome;
+        }
+
+        if (titleMatches[0].Id != id)
+        {
+            return CreateOutcome(
+                AssistantOutcomeStatus.InvalidArguments,
+                "none",
+                "The proposed task ID does not match the task found by title.");
+        }
+
+        return null;
+    }
+
+    private static AssistantOutcome? ValidateTitleMatchCount(
+        List<TaskItem> titleMatches)
+    {
         if (titleMatches.Count == 0)
         {
             return CreateOutcome(
@@ -431,14 +426,6 @@ public class ToolExecutor
                 "none",
                 $"I found multiple matching tasks: {choices}. Please specify the task ID.",
                 titleMatches);
-        }
-
-        if (titleMatches[0].Id != id)
-        {
-            return CreateOutcome(
-                AssistantOutcomeStatus.InvalidArguments,
-                "none",
-                "The proposed task ID does not match the task found by title.");
         }
 
         return null;

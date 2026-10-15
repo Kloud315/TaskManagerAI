@@ -54,6 +54,7 @@ public class AssistantController : ControllerBase
         {
             AssistantOutcomeStatus.Success
                 or AssistantOutcomeStatus.OutOfScope
+                or AssistantOutcomeStatus.ClarificationNeeded
                 or AssistantOutcomeStatus.ConfirmationRequired
                 or AssistantOutcomeStatus.Cancelled => Ok(response),
             AssistantOutcomeStatus.InvalidArguments => BadRequest(response),

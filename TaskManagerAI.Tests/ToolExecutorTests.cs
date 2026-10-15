@@ -1,5 +1,9 @@
+using System.Net;
+using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
+using TaskManagerAI.Configuration;
 using TaskManagerAI.DTOs;
 using TaskManagerAI.Models;
 using TaskManagerAI.Services;
@@ -132,6 +136,191 @@ public class ToolExecutorTests
     }
 
     [Fact]
+    public async Task AssistantRejectsUngroundedDeleteIdWithoutTitleLookup()
+    {
+        using var arguments = JsonDocument.Parse("""{"id":1}""");
+        using var modelContent = JsonDocument.Parse("""{"role":"model"}""");
+        var taskService = new FakeTaskService
+        {
+            ExistingTasks =
+            [
+                new TaskItem { Id = 1, Title = "Finish report" },
+                new TaskItem { Id = 2, Title = "Review report" }
+            ]
+        };
+        var assistant = new AssistantService(
+            new FakeGeminiClient(new GeminiTurn(
+                CreateProposal("delete_task", arguments),
+                modelContent.RootElement.Clone(),
+                string.Empty)),
+            CreateExecutor(taskService));
+
+        var outcome = await assistant.HandleMessageAsync("Delete the report task");
+
+        Assert.Equal(AssistantOutcomeStatus.Ambiguous, outcome.Status);
+        Assert.Equal("none", outcome.Action);
+        Assert.Equal(
+            "I couldn't tell which task you mean. Please give the task ID, or a more specific title.",
+            outcome.Result);
+        Assert.Null(outcome.ConfirmationToken);
+        Assert.Equal(0, taskService.GetByIdCalls);
+        Assert.Equal(0, taskService.DeleteCalls);
+    }
+
+    [Fact]
+    public async Task AssistantExecutesUpdateWhenIdAppearsInMessage()
+    {
+        using var arguments = JsonDocument.Parse("""{"id":3,"isDone":true}""");
+        using var modelContent = JsonDocument.Parse("""{"role":"model"}""");
+        var taskService = new FakeTaskService
+        {
+            ExistingTask = new TaskItem { Id = 3, Title = "Finish report" }
+        };
+        var assistant = new AssistantService(
+            new FakeGeminiClient(new GeminiTurn(
+                CreateProposal("update_task", arguments),
+                modelContent.RootElement.Clone(),
+                string.Empty)),
+            CreateExecutor(taskService));
+
+        var outcome = await assistant.HandleMessageAsync("Mark task 3 as done");
+
+        Assert.Equal(AssistantOutcomeStatus.Success, outcome.Status);
+        Assert.Equal("update_task", outcome.Action);
+        Assert.Equal(3, taskService.LastRequestedId);
+        Assert.Equal(1, taskService.UpdateCalls);
+    }
+
+    [Fact]
+    public async Task AssistantProposesDeleteWhenIdAppearsInMessage()
+    {
+        using var arguments = JsonDocument.Parse("""{"id":3}""");
+        using var modelContent = JsonDocument.Parse("""{"role":"model"}""");
+        var taskService = new FakeTaskService
+        {
+            ExistingTask = new TaskItem { Id = 3, Title = "Finish report" }
+        };
+        var assistant = new AssistantService(
+            new FakeGeminiClient(new GeminiTurn(
+                CreateProposal("delete_task", arguments),
+                modelContent.RootElement.Clone(),
+                string.Empty)),
+            CreateExecutor(taskService));
+
+        var outcome = await assistant.HandleMessageAsync("Delete task 3");
+
+        Assert.Equal(AssistantOutcomeStatus.ConfirmationRequired, outcome.Status);
+        Assert.NotNull(outcome.ConfirmationToken);
+        Assert.Equal(0, taskService.DeleteCalls);
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("  out_of_scope  ")]
+    [InlineData("Out_Of_Scope")]
+    public async Task AssistantMapsEmptyOrOutOfScopeTextToOutOfScope(
+        string responseText)
+    {
+        using var modelContent = JsonDocument.Parse("""{"role":"model"}""");
+        var geminiClient = new FakeGeminiClient(new GeminiTurn(
+            null,
+            modelContent.RootElement.Clone(),
+            responseText));
+        var assistant = new AssistantService(
+            geminiClient,
+            CreateExecutor(new FakeTaskService()));
+
+        var outcome = await assistant.HandleMessageAsync("What is the weather?");
+
+        Assert.Equal(AssistantOutcomeStatus.OutOfScope, outcome.Status);
+        Assert.Equal("none", outcome.Action);
+        Assert.Equal("Sorry, I can only help with managing tasks.", outcome.Result);
+    }
+
+    [Fact]
+    public async Task AssistantReturnsModelClarifyingQuestion()
+    {
+        using var modelContent = JsonDocument.Parse("""{"role":"model"}""");
+        const string question = "What should the task title be?";
+        var geminiClient = new FakeGeminiClient(new GeminiTurn(
+            null,
+            modelContent.RootElement.Clone(),
+            question));
+        var assistant = new AssistantService(
+            geminiClient,
+            CreateExecutor(new FakeTaskService()));
+
+        var outcome = await assistant.HandleMessageAsync("Add a task");
+
+        Assert.Equal(AssistantOutcomeStatus.ClarificationNeeded, outcome.Status);
+        Assert.Equal("none", outcome.Action);
+        Assert.Equal(question, outcome.Result);
+    }
+
+    [Fact]
+    public async Task AssistantDoesNotExecuteMultipleProposedFunctions()
+    {
+        const string responseBody = """
+            {"candidates":[{"content":{"role":"model","parts":[
+              {"functionCall":{"name":"create_task","args":{"title":"first"}}},
+              {"functionCall":{"name":"list_tasks","args":{}}}
+            ]}}]}
+            """;
+        var taskService = new FakeTaskService();
+        using var httpClient = new HttpClient(new StubHttpMessageHandler(responseBody));
+        var geminiClient = new GeminiClient(
+            httpClient,
+            Options.Create(new GeminiOptions
+            {
+                ApiKey = "test-key",
+                Model = "test-model"
+            }),
+            NullLogger<GeminiClient>.Instance);
+        var assistant = new AssistantService(
+            geminiClient,
+            CreateExecutor(taskService));
+
+        var outcome = await assistant.HandleMessageAsync("Add a task and list my tasks");
+
+        Assert.Equal(AssistantOutcomeStatus.CouldNotComplete, outcome.Status);
+        Assert.Equal("none", outcome.Action);
+        Assert.Equal("Please ask for one action at a time.", outcome.Result);
+        Assert.Equal(0, taskService.CreateCalls);
+        Assert.Equal(0, taskService.GetAllCalls);
+        Assert.Equal(0, taskService.GetByIdCalls);
+        Assert.Equal(0, taskService.DeleteCalls);
+    }
+
+    [Fact]
+    public async Task ListingQuestionContainingMutationWordIsNotRejectedAsMutation()
+    {
+        using var listArguments = JsonDocument.Parse(
+            """{"title_contains":"update","is_done":false}""");
+        using var modelContent = JsonDocument.Parse("""{"role":"model"}""");
+        var taskService = new FakeTaskService();
+        var geminiClient = new FakeGeminiClient(
+            new GeminiTurn(
+                CreateProposal("list_tasks", listArguments),
+                modelContent.RootElement.Clone(),
+                string.Empty),
+            new GeminiTurn(
+                null,
+                modelContent.RootElement.Clone(),
+                "Here are the incomplete tasks matching your request."));
+        var assistant = new AssistantService(
+            geminiClient,
+            CreateExecutor(taskService));
+
+        var outcome = await assistant.HandleMessageAsync(
+            "What tasks do I still need to update?");
+
+        Assert.Equal(AssistantOutcomeStatus.Success, outcome.Status);
+        Assert.Equal("list_tasks", outcome.Action);
+        Assert.Equal(2, geminiClient.CallCount);
+        Assert.Empty(taskService.ExistingTasks);
+    }
+
+    [Fact]
     public async Task DeleteTask_RequiresConfirmationBeforeDeleting()
     {
         var taskService = new FakeTaskService
@@ -178,11 +367,11 @@ public class ToolExecutorTests
 
     private sealed class FakeGeminiClient : IGeminiClient
     {
-            private readonly GeminiTurn _turn;
+            private readonly GeminiTurn[] _turns;
 
-            public FakeGeminiClient(GeminiTurn turn)
+            public FakeGeminiClient(params GeminiTurn[] turns)
             {
-                _turn = turn;
+                _turns = turns;
             }
 
             public int CallCount { get; private set; }
@@ -192,8 +381,31 @@ public class ToolExecutorTests
                 CancellationToken cancellationToken = default)
             {
                 CallCount++;
-                return Task.FromResult(_turn);
+                return Task.FromResult(_turns[Math.Min(CallCount - 1, _turns.Length - 1)]);
             }
+    }
+
+    private sealed class StubHttpMessageHandler : HttpMessageHandler
+    {
+        private readonly string _responseBody;
+
+        public StubHttpMessageHandler(string responseBody)
+        {
+            _responseBody = responseBody;
+        }
+
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(
+                    _responseBody,
+                    Encoding.UTF8,
+                    "application/json")
+            });
+        }
     }
 
     private sealed class FakeTaskService : ITaskService
@@ -201,6 +413,7 @@ public class ToolExecutorTests
         public int CreateCalls { get; private set; }
         public int UpdateCalls { get; private set; }
         public int DeleteCalls { get; private set; }
+        public int GetAllCalls { get; private set; }
         public int GetByIdCalls { get; private set; }
         public int? LastRequestedId { get; private set; }
         public TaskItem? ExistingTask { get; init; }
@@ -208,6 +421,7 @@ public class ToolExecutorTests
 
         public Task<List<TaskItem>> GetAllAsync(CancellationToken cancellationToken = default)
         {
+            GetAllCalls++;
             return Task.FromResult(ExistingTasks.ToList());
         }
 
@@ -235,7 +449,7 @@ public class ToolExecutorTests
             CancellationToken cancellationToken = default)
         {
             UpdateCalls++;
-            return Task.FromResult(false);
+            return Task.FromResult(ExistingTask?.Id == id);
         }
 
         public Task<bool> DeleteAsync(

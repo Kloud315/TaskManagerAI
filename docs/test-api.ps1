@@ -150,6 +150,36 @@ try {
     [void]$evidence.Add("Response: $($existingTasks.Count) task(s); task values omitted.")
     [void]$evidence.Add('')
 
+    $incomplete = Invoke-AssistantMessage `
+        -Label 'List incomplete tasks through the assistant' `
+        -Message "Show me everything that's not done yet"
+    Assert-StatusCode $incomplete 200 'Assistant incomplete-task listing'
+    $incompleteResponse = $incomplete.Body | ConvertFrom-Json
+    if ($incompleteResponse.action -ne 'list_tasks') {
+        throw 'The assistant did not return a task listing for the incomplete-task request.'
+    }
+
+    $clarification = Invoke-AssistantMessage `
+        -Label 'Ask for a task title when none was provided' `
+        -Message 'Add a task'
+    Assert-StatusCode $clarification 200 'Assistant clarification case'
+    $clarificationResponse = $clarification.Body | ConvertFrom-Json
+    if ($clarificationResponse.action -ne 'none' -or [string]::IsNullOrWhiteSpace($clarificationResponse.result)) {
+        throw 'The assistant did not ask a clarifying question for a task without a title.'
+    }
+
+    $report = Invoke-AssistantMessage `
+        -Label 'Create Finish report due next Friday' `
+        -Message "Add a task called 'Finish report' due next Friday"
+    Assert-StatusCode $report 200 'Assistant next-Friday task creation'
+    $reportResponse = $report.Body | ConvertFrom-Json
+    if ($reportResponse.action -ne 'create_task' `
+        -or $reportResponse.data.title -ne 'Finish report' `
+        -or $null -eq $reportResponse.data.dueDate) {
+        throw 'The assistant did not create Finish report with a due date.'
+    }
+    Add-TestTaskId ([int]$reportResponse.data.id)
+
     $title = "API smoke test $([Guid]::NewGuid().ToString('N'))"
     $dueDate = (Get-Date).Date.AddDays(7).ToString('yyyy-MM-dd')
     $created = Invoke-AssistantMessage `
@@ -226,6 +256,41 @@ try {
         -Label 'Reject an ambiguous title-based deletion' `
         -Message "Delete the $marker report task"
     Assert-StatusCode $ambiguousDelete 409 'Assistant ambiguous-delete case'
+
+    $deleteSeed = Invoke-RecordedRequest `
+        -Label 'Create a task for the delete-confirmation test using CRUD' `
+        -Method 'POST' `
+        -Path '/api/tasks' `
+        -Body @{ title = "confirmation-$([Guid]::NewGuid().ToString('N'))"; isDone = $false }
+    Assert-StatusCode $deleteSeed 201 'Create delete-confirmation task'
+    $deleteTaskId = [int](($deleteSeed.Body | ConvertFrom-Json).id)
+    Add-TestTaskId $deleteTaskId
+
+    $deleteProposal = Invoke-AssistantMessage `
+        -Label 'Request deletion by task ID' `
+        -Message "Delete task $deleteTaskId"
+    Assert-StatusCode $deleteProposal 200 'Assistant delete proposal'
+    $deleteProposalResponse = $deleteProposal.Body | ConvertFrom-Json
+    if ($deleteProposalResponse.action -ne 'delete_task' `
+        -or [string]::IsNullOrWhiteSpace($deleteProposalResponse.confirmationToken)) {
+        throw 'The assistant did not return a delete confirmation token.'
+    }
+
+    $deleteConfirmation = Invoke-RecordedRequest `
+        -Label 'Confirm deletion with the returned token' `
+        -Method 'POST' `
+        -Path '/api/assistant/confirm-delete' `
+        -Body @{
+            confirmationToken = $deleteProposalResponse.confirmationToken
+            confirm = $true
+        }
+    Assert-StatusCode $deleteConfirmation 200 'Confirm assistant deletion'
+    $deleteConfirmationResponse = $deleteConfirmation.Body | ConvertFrom-Json
+    if ($deleteConfirmationResponse.action -ne 'delete_task') {
+        throw 'The delete confirmation response did not report the deletion.'
+    }
+    [void]$createdTaskIds.Remove($deleteTaskId)
+
     $runSucceeded = $true
 }
 finally {
