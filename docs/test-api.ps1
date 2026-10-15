@@ -1,44 +1,18 @@
 [CmdletBinding()]
 param(
-    [switch]$Case5Only
+    [string]$BaseUrl = 'http://localhost:5057',
+    [switch]$LeaveDemoTask
 )
 
 $ErrorActionPreference = 'Stop'
-
-$baseUrl = 'http://localhost:5057'
+$BaseUrl = $BaseUrl.TrimEnd('/')
 $evidencePath = Join-Path $PSScriptRoot 'test-outputs.txt'
 $settingsPath = Join-Path (Split-Path $PSScriptRoot -Parent) 'appsettings.json'
 $model = (Get-Content $settingsPath -Raw | ConvertFrom-Json).Gemini.Model
-$runDate = Get-Date
-
-$runHeader = @(
-    "Date/time: $($runDate.ToString('yyyy-MM-dd HH:mm:ss zzz'))"
-    "Model (appsettings.json): $model"
-    ''
-)
-if (Test-Path $evidencePath) {
-    $runHeader | Add-Content -Path $evidencePath -Encoding UTF8
-} else {
-    $runHeader | Set-Content -Path $evidencePath -Encoding UTF8
-}
-
-function Add-EvidenceEntry {
-    param(
-        [Parameter(Mandatory)][string]$Label,
-        [Parameter(Mandatory)][string]$Request,
-        [Parameter(Mandatory)][string]$Status,
-        [Parameter(Mandatory)][AllowEmptyString()][string]$Response
-    )
-
-    @(
-        "=== $Label ==="
-        "Request: $Request"
-        "HTTP status: $Status"
-        'Response body:'
-        $Response
-        ''
-    ) | Add-Content -Path $evidencePath -Encoding UTF8
-}
+$evidence = [System.Collections.Generic.List[string]]::new()
+$createdTaskIds = [System.Collections.Generic.List[int]]::new()
+$runSucceeded = $false
+$cleanupSucceeded = $true
 
 function Invoke-RecordedRequest {
     param(
@@ -48,57 +22,58 @@ function Invoke-RecordedRequest {
         [AllowNull()][object]$Body
     )
 
-    $requestFile = [System.IO.Path]::GetTempFileName()
-    $responseFile = [System.IO.Path]::GetTempFileName()
-    $requestText = ''
+    $uri = "$BaseUrl$Path"
+    $requestBody = $null
+    $responseBody = ''
+    $statusCode = 0
 
     try {
-        $curlArgs = @(
-            '--silent',
-            '--show-error',
-            '--output', $responseFile,
-            '--write-out', '%{http_code}',
-            '--request', $Method,
-            '--header', 'Content-Type: application/json'
-        )
-
-        if ($null -ne $Body) {
-            $requestText = $Body | ConvertTo-Json -Depth 20 -Compress
-            [System.IO.File]::WriteAllText(
-                $requestFile,
-                $requestText,
-                (New-Object System.Text.UTF8Encoding($false)))
-            $curlArgs += @('--data-binary', "@$requestFile")
+        if ($null -eq $Body) {
+            $response = Invoke-WebRequest -Uri $uri -Method $Method -UseBasicParsing -TimeoutSec 180
+        }
+        else {
+            $requestBody = ConvertTo-Json -InputObject $Body -Depth 20 -Compress
+            $response = Invoke-WebRequest `
+                -Uri $uri `
+                -Method $Method `
+                -ContentType 'application/json' `
+                -Body $requestBody `
+                -UseBasicParsing `
+                -TimeoutSec 180
         }
 
-        $uri = "$baseUrl$Path"
-        $curlArgs += $uri
-        $curlOutput = & curl.exe @curlArgs 2>&1
-        $curlExitCode = $LASTEXITCODE
-        $responseText = [System.IO.File]::ReadAllText($responseFile)
-        $status = ($curlOutput -join "`n").Trim()
-
-        if ($curlExitCode -ne 0) {
-            $responseText = "curl.exe exit code $curlExitCode`r`n$($curlOutput -join "`n")`r`n$responseText"
-            if (-not $status) {
-                $status = 'curl failed; no HTTP status received'
-            }
+        $statusCode = [int]$response.StatusCode
+        $responseBody = [string]$response.Content
+    }
+    catch {
+        if ($null -eq $_.Exception.Response) {
+            throw
         }
 
-        $requestDescription = "$Method $uri"
-        if ($null -ne $Body) {
-            $requestDescription += "`r`nRequest body: $requestText"
+        $httpResponse = $_.Exception.Response
+        $statusCode = [int]$httpResponse.StatusCode
+        $reader = New-Object System.IO.StreamReader($httpResponse.GetResponseStream())
+        try {
+            $responseBody = $reader.ReadToEnd()
         }
-
-        Add-EvidenceEntry -Label $Label -Request $requestDescription -Status $status -Response $responseText
-        [pscustomobject]@{
-            Status = $status
-            Body = $responseText
-            CurlExitCode = $curlExitCode
+        finally {
+            $reader.Dispose()
         }
     }
-    finally {
-        Remove-Item -LiteralPath $requestFile, $responseFile -Force -ErrorAction SilentlyContinue
+
+    [void]$evidence.Add("=== $Label ===")
+    [void]$evidence.Add("Request: $Method $Path")
+    if ($null -ne $requestBody) {
+        [void]$evidence.Add("Body: $requestBody")
+    }
+    [void]$evidence.Add("HTTP status: $statusCode")
+    [void]$evidence.Add('Response:')
+    [void]$evidence.Add($responseBody)
+    [void]$evidence.Add('')
+
+    return [pscustomobject]@{
+        StatusCode = $statusCode
+        Body = $responseBody
     }
 }
 
@@ -108,174 +83,204 @@ function Invoke-AssistantMessage {
         [Parameter(Mandatory)][string]$Message
     )
 
-    Invoke-RecordedRequest -Label $Label -Method 'POST' -Path '/api/assistant' -Body @{ message = $Message }
+    for ($attempt = 0; $attempt -le 2; $attempt++) {
+        $attemptLabel = if ($attempt -eq 0) {
+            $Label
+        }
+        else {
+            "$Label (retry $attempt)"
+        }
+
+        $result = Invoke-RecordedRequest `
+            -Label $attemptLabel `
+            -Method 'POST' `
+            -Path '/api/assistant' `
+            -Body @{ message = $Message }
+
+        if ($result.StatusCode -ne 503 -or $attempt -eq 2) {
+            return $result
+        }
+
+        [void]$evidence.Add('Assistant returned HTTP 503; retrying after 10 seconds.')
+        Start-Sleep -Seconds 10
+    }
 }
 
-function Get-ConfirmationToken {
+function Assert-StatusCode {
     param(
-        [Parameter(Mandatory)][string]$Label,
-        [Parameter(Mandatory)][string]$ResponseBody
+        [Parameter(Mandatory)]$Result,
+        [Parameter(Mandatory)][int]$ExpectedStatusCode,
+        [Parameter(Mandatory)][string]$Operation
     )
 
-    try {
-        $parsedResponse = $ResponseBody | ConvertFrom-Json -ErrorAction Stop
+    if ($Result.StatusCode -ne $ExpectedStatusCode) {
+        throw "$Operation returned HTTP $($Result.StatusCode), expected HTTP $ExpectedStatusCode. See docs/test-outputs.txt."
     }
-    catch {
-        Add-EvidenceEntry -Label $Label -Request 'Parse the preceding API response as JSON and read confirmationToken' `
-            -Status 'PARSE FAILED' -Response "JSON parse error: $($_.Exception.Message)"
-        return $null
-    }
-
-    return $parsedResponse.confirmationToken
 }
 
-if ($Case5Only) {
-    Invoke-AssistantMessage -Label 'Case 5: show all tasks (invalid API key)' `
-        -Message 'Show me all tasks'
-    return
+function Add-TestTaskId {
+    param([Parameter(Mandatory)][int]$TaskId)
+
+    if (-not $createdTaskIds.Contains($TaskId)) {
+        $createdTaskIds.Add($TaskId)
+    }
 }
 
-$localDbConnection = New-Object System.Data.SqlClient.SqlConnection `
-    'Server=(localdb)\MSSQLLocalDB;Database=TaskManagerAI;Integrated Security=True;'
-$localDbResetSucceeded = $false
+$runDate = Get-Date
+[void]$evidence.Add("Validation date/time: $($runDate.ToString('yyyy-MM-dd HH:mm:ss zzz'))")
+[void]$evidence.Add("Model: $model")
+[void]$evidence.Add('')
+
 try {
-    $localDbConnection.Open()
-    $localDbCommand = $localDbConnection.CreateCommand()
-    $localDbCommand.CommandText = 'TRUNCATE TABLE dbo.Tasks;'
-    $localDbCommand.ExecuteNonQuery() | Out-Null
-    $localDbResetSucceeded = $true
-    Add-EvidenceEntry -Label 'Requested LocalDB reset' `
-        -Request 'TRUNCATE TABLE dbo.Tasks on (localdb)\MSSQLLocalDB, database TaskManagerAI' `
-        -Status 'SUCCEEDED' -Response 'TRUNCATE TABLE dbo.Tasks completed.'
-}
-catch {
-    Add-EvidenceEntry -Label 'Requested LocalDB reset' `
-        -Request 'TRUNCATE TABLE dbo.Tasks on (localdb)\MSSQLLocalDB, database TaskManagerAI' `
-        -Status 'FAILED' -Response "LOCALDB_CONNECTION_FAILED: $($_.Exception.Message)"
+    $existingResponse = Invoke-WebRequest `
+        -Uri "$BaseUrl/api/tasks" `
+        -Method 'GET' `
+        -UseBasicParsing `
+        -TimeoutSec 30
+    Assert-StatusCode ([pscustomobject]@{ StatusCode = [int]$existingResponse.StatusCode }) 200 'GET /api/tasks'
+    $existingTasks = @($existingResponse.Content | ConvertFrom-Json)
+    $existingIds = @($existingTasks | ForEach-Object { [int]$_.id })
+    $missingId = [int]::MaxValue
+    while ($existingIds -contains $missingId) {
+        $missingId--
+    }
+    [void]$evidence.Add('=== Read existing tasks before the test ===')
+    [void]$evidence.Add('Request: GET /api/tasks')
+    [void]$evidence.Add("HTTP status: $([int]$existingResponse.StatusCode)")
+    [void]$evidence.Add("Response: $($existingTasks.Count) task(s); task values omitted.")
+    [void]$evidence.Add('')
+
+    $title = "API smoke test $([Guid]::NewGuid().ToString('N'))"
+    $dueDate = (Get-Date).Date.AddDays(7).ToString('yyyy-MM-dd')
+    $created = Invoke-AssistantMessage `
+        -Label 'Create a task through the assistant' `
+        -Message "Add a task called '$title' due $dueDate"
+    Assert-StatusCode $created 200 'Assistant create_task'
+    $createdResponse = $created.Body | ConvertFrom-Json
+    Add-TestTaskId ([int]$createdResponse.data.id)
+    $createdTaskId = [int]$createdResponse.data.id
+    if ($createdResponse.action -ne 'create_task' -or $createdResponse.data.title -ne $title) {
+        throw 'The assistant create response did not match the requested task.'
+    }
+    if ([DateTime]$createdResponse.data.dueDate -ne [DateTime]$dueDate) {
+        throw 'The assistant did not return the requested due date.'
+    }
+
+    $updated = Invoke-AssistantMessage `
+        -Label 'Mark the created task complete through the assistant' `
+        -Message "Mark task $createdTaskId as done"
+    Assert-StatusCode $updated 200 'Assistant update_task'
+    $updatedResponse = $updated.Body | ConvertFrom-Json
+    if ($updatedResponse.action -ne 'update_task' -or -not $updatedResponse.data.isDone) {
+        throw 'The assistant did not mark the created task complete.'
+    }
+
+    $missing = Invoke-AssistantMessage `
+        -Label 'Request a task that does not exist' `
+        -Message "Mark task $missingId as done"
+    Assert-StatusCode $missing 404 'Assistant missing-task case'
+
+    $outOfScope = Invoke-AssistantMessage `
+        -Label 'Reject an out-of-scope question' `
+        -Message "What's the capital of France?"
+    Assert-StatusCode $outOfScope 200 'Assistant out-of-scope case'
+    $outOfScopeResponse = $outOfScope.Body | ConvertFrom-Json
+    if ($outOfScopeResponse.action -ne 'none') {
+        throw 'The assistant did not reject the out-of-scope request.'
+    }
+
+    $sqlTitle = "SQL probe $([Guid]::NewGuid().ToString('N')) ; DROP TABLE Tasks;--"
+    $sqlLikeTask = Invoke-AssistantMessage `
+        -Label 'Store a SQL-looking title as ordinary text' `
+        -Message "Add a task with the exact title '$sqlTitle'"
+    Assert-StatusCode $sqlLikeTask 200 'Assistant SQL-looking title case'
+    $sqlLikeResponse = $sqlLikeTask.Body | ConvertFrom-Json
+    if ($null -ne $sqlLikeResponse.data.id) {
+        Add-TestTaskId ([int]$sqlLikeResponse.data.id)
+    }
+    if ($sqlLikeResponse.action -ne 'create_task' -or $sqlLikeResponse.data.title -ne $sqlTitle) {
+        throw 'The SQL-looking title was not stored exactly as ordinary task text.'
+    }
+    $sqlStoredTask = Invoke-RecordedRequest `
+        -Label 'Read back the SQL-looking title' `
+        -Method 'GET' `
+        -Path "/api/tasks/$($sqlLikeResponse.data.id)" `
+        -Body $null
+    Assert-StatusCode $sqlStoredTask 200 'Read back SQL-looking task'
+    if (($sqlStoredTask.Body | ConvertFrom-Json).title -ne $sqlTitle) {
+        throw 'The SQL-looking task title did not round-trip unchanged.'
+    }
+
+    $marker = "ambiguity-$([Guid]::NewGuid().ToString('N').Substring(0, 8))"
+    foreach ($title in @("$marker report - Finish", "$marker report - Review")) {
+        $seededTask = Invoke-RecordedRequest `
+            -Label 'Create a task for the ambiguity test using CRUD' `
+            -Method 'POST' `
+            -Path '/api/tasks' `
+            -Body @{ title = $title; isDone = $false }
+        Assert-StatusCode $seededTask 201 'Create ambiguity-test task'
+        Add-TestTaskId ([int](($seededTask.Body | ConvertFrom-Json).id))
+    }
+
+    $ambiguousDelete = Invoke-AssistantMessage `
+        -Label 'Reject an ambiguous title-based deletion' `
+        -Message "Delete the $marker report task"
+    Assert-StatusCode $ambiguousDelete 409 'Assistant ambiguous-delete case'
+    $runSucceeded = $true
 }
 finally {
-    $localDbConnection.Dispose()
-}
+    if ($createdTaskIds.Count -gt 0 -and -not $LeaveDemoTask) {
+        foreach ($createdTaskId in $createdTaskIds) {
+            try {
+                $cleanup = Invoke-RecordedRequest `
+                    -Label "Remove only test-created task $createdTaskId" `
+                    -Method 'DELETE' `
+                    -Path "/api/tasks/$createdTaskId" `
+                    -Body $null
+                Assert-StatusCode $cleanup 204 'Delete test task'
+            }
+            catch {
+                $cleanupSucceeded = $false
+                [void]$evidence.Add("WARNING: Cleanup failed for test task $createdTaskId`: $($_.Exception.Message)")
+            }
+        }
 
-$sqlConnection = $null
-if (-not $localDbResetSucceeded) {
-    $sqlConnection = New-Object System.Data.SqlClient.SqlConnection `
-        'Server=KLOUD-LAPTOP\SQLEXPRESS;Database=TaskManagerAI;Integrated Security=True;TrustServerCertificate=True;'
-    try {
-        $sqlConnection.Open()
-        $sqlCommand = $sqlConnection.CreateCommand()
-        $sqlCommand.CommandText = @'
-TRUNCATE TABLE dbo.Tasks;
-SELECT CONCAT(
-    'TRUNCATE TABLE dbo.Tasks succeeded; row_count=',
-    COUNT(*),
-    '; identity_current=',
-    COALESCE(CONVERT(varchar(30), IDENT_CURRENT('dbo.Tasks')), 'NULL')
-)
-FROM dbo.Tasks;
-'@
-        $resetResult = [string]$sqlCommand.ExecuteScalar()
-        Add-EvidenceEntry -Label 'Authorized SQLEXPRESS database reset' `
-            -Request 'TRUNCATE TABLE dbo.Tasks on KLOUD-LAPTOP\SQLEXPRESS, database TaskManagerAI' `
-            -Status 'SUCCEEDED' -Response $resetResult
-    }
-    catch {
-        $failure = "SQLEXPRESS_RESET_FAILED: $($_.Exception.Message)"
-        Add-EvidenceEntry -Label 'Authorized SQLEXPRESS database reset' `
-            -Request 'TRUNCATE TABLE dbo.Tasks on KLOUD-LAPTOP\SQLEXPRESS, database TaskManagerAI' `
-            -Status 'FAILED' -Response $failure
-        throw $failure
-    }
-    finally {
-        if ($null -ne $sqlConnection) {
-            $sqlConnection.Dispose()
+        try {
+            $afterCleanupResponse = Invoke-WebRequest `
+                -Uri "$BaseUrl/api/tasks" `
+                -Method 'GET' `
+                -UseBasicParsing `
+                -TimeoutSec 30
+            Assert-StatusCode ([pscustomobject]@{ StatusCode = [int]$afterCleanupResponse.StatusCode }) 200 'GET /api/tasks after cleanup'
+            $remainingTasks = @($afterCleanupResponse.Content | ConvertFrom-Json)
+            $remainingTestTasks = @($remainingTasks | Where-Object { $createdTaskIds.Contains([int]$_.id) })
+            [void]$evidence.Add('=== Verify no task from this test remains ===')
+            [void]$evidence.Add('Request: GET /api/tasks')
+            [void]$evidence.Add("HTTP status: $([int]$afterCleanupResponse.StatusCode)")
+            [void]$evidence.Add("Response: $($remainingTasks.Count) task(s); test tasks remaining: $($remainingTestTasks.Count).")
+            [void]$evidence.Add('')
+            if ($remainingTestTasks.Count -gt 0) {
+                throw "Test task IDs still present: $(($remainingTestTasks.id) -join ', ')."
+            }
+        }
+        catch {
+            $cleanupSucceeded = $false
+            [void]$evidence.Add("WARNING: Could not verify test-task cleanup: $($_.Exception.Message)")
         }
     }
-}
-
-$today = (Get-Date).Date
-$daysUntilFriday = (5 - [int]$today.DayOfWeek + 7) % 7
-if ($daysUntilFriday -eq 0) {
-    $daysUntilFriday = 7
-}
-$nextFriday = $today.AddDays($daysUntilFriday)
-$happyPathResult = Invoke-AssistantMessage -Label 'Happy path a: create task due next Friday' `
-    -Message "Add a task called 'Call dentist' due next Friday"
-
-$reportedDueDate = $null
-$dateParseError = $null
-try {
-    $happyResponse = $happyPathResult.Body | ConvertFrom-Json -ErrorAction Stop
-    $reportedDueDate = $happyResponse.data.dueDate
-} catch {
-    $dateParseError = $_.Exception.Message
-}
-$dueDateMatches = $false
-if ($reportedDueDate) {
-    try {
-        $dueDateMatches = ([datetime]$reportedDueDate).Date -eq $nextFriday
-    } catch {
-        $dateParseError = $_.Exception.Message
+    elseif ($createdTaskIds.Count -gt 0) {
+        [void]$evidence.Add("Test tasks $($createdTaskIds -join ', ') were retained because -LeaveDemoTask was specified.")
     }
-}
-Add-EvidenceEntry -Label 'Happy path a: date verification' `
-    -Request "Get-Date; calculate the next Friday strictly after $($today.ToString('yyyy-MM-dd')); compare with the dueDate in the preceding API response" `
-    -Status 'CHECKED' `
-    -Response "Today=$($today.ToString('yyyy-MM-dd')); nextFriday=$($nextFriday.ToString('yyyy-MM-dd')); API_dueDate=$reportedDueDate; matches=$dueDateMatches; parse_error=$dateParseError"
 
-Invoke-AssistantMessage -Label 'Happy path b: mark task 1 done' -Message 'Mark task 1 as done' | Out-Null
-Invoke-AssistantMessage -Label 'Happy path c: list tasks not done' -Message "Show me everything that's not done yet" | Out-Null
-
-Invoke-AssistantMessage -Label 'Error 1: out of scope' -Message "What's the capital of France?" | Out-Null
-Invoke-AssistantMessage -Label 'Error 2: nonexistent task' -Message 'Mark task 999 as done' | Out-Null
-
-Invoke-AssistantMessage -Label 'Error 3: create Finish report' -Message "Add a task called 'Finish report'" | Out-Null
-Invoke-AssistantMessage -Label 'Error 3: create Review report' -Message "Add a task called 'Review report'" | Out-Null
-Invoke-AssistantMessage -Label 'Error 3: ambiguous delete' -Message 'Delete the report task' | Out-Null
-Invoke-RecordedRequest -Label 'Error 3: verify tasks remain after ambiguous delete' `
-    -Method 'GET' -Path '/api/tasks' -Body $null | Out-Null
-
-Invoke-AssistantMessage -Label 'Error 4a: missing title - Add a task' -Message 'Add a task' | Out-Null
-Invoke-AssistantMessage -Label 'Error 4b: missing title - no name' -Message 'Create a task with no name' | Out-Null
-Invoke-AssistantMessage -Label 'Error 4c: missing title - no title' -Message 'Add a task with no title' | Out-Null
-
-Invoke-AssistantMessage -Label 'Error 6: SQL-looking title' `
-    -Message "Add a task called '); DROP TABLE Tasks;--" | Out-Null
-Invoke-RecordedRequest -Label 'Error 6: verify tasks table and stored title' `
-    -Method 'GET' -Path '/api/tasks' -Body $null | Out-Null
-
-Invoke-AssistantMessage -Label 'Delete confirmation: create target task' `
-    -Message "Add a task called 'Temporary delete confirmation target'" | Out-Null
-$deleteRequest = Invoke-AssistantMessage -Label 'Delete confirmation: request delete and capture token' `
-    -Message "Delete task called 'Temporary delete confirmation target'"
-$deleteToken = Get-ConfirmationToken -Label 'Delete confirmation: parse confirmation token' `
-    -ResponseBody $deleteRequest.Body
-if ($deleteToken) {
-    $confirmation = @{ confirmationToken = $deleteToken; confirm = $true }
-    Invoke-RecordedRequest -Label 'Delete confirmation: confirm true' `
-        -Method 'POST' -Path '/api/assistant/confirm-delete' -Body $confirmation | Out-Null
-    Invoke-RecordedRequest -Label 'Delete confirmation: reuse consumed token' `
-        -Method 'POST' -Path '/api/assistant/confirm-delete' -Body $confirmation | Out-Null
-} else {
-    Add-EvidenceEntry -Label 'Delete confirmation: token-dependent steps' `
-        -Request 'Use confirmationToken from the preceding delete request' `
-        -Status 'NOT RUN' -Response 'The preceding API response did not contain a confirmationToken.'
-}
-
-Invoke-AssistantMessage -Label 'Delete confirmation: create cancellation target' `
-    -Message "Add a task called 'Keep this task after cancellation'" | Out-Null
-$cancelRequest = Invoke-AssistantMessage -Label 'Delete confirmation: request delete for cancellation' `
-    -Message "Delete task called 'Keep this task after cancellation'"
-$cancelToken = Get-ConfirmationToken -Label 'Delete confirmation: parse cancellation token' `
-    -ResponseBody $cancelRequest.Body
-if ($cancelToken) {
-    $cancellation = @{ confirmationToken = $cancelToken; confirm = $false }
-    Invoke-RecordedRequest -Label 'Delete confirmation: confirm false' `
-        -Method 'POST' -Path '/api/assistant/confirm-delete' -Body $cancellation | Out-Null
-} else {
-    Add-EvidenceEntry -Label 'Delete confirmation: confirm false step' `
-        -Request 'Use confirmationToken from the preceding cancellation delete request with confirm=false' `
-        -Status 'NOT RUN' -Response 'The preceding API response did not contain a confirmationToken.'
+    if ($runSucceeded -and $cleanupSucceeded) {
+        [System.IO.File]::WriteAllLines(
+            $evidencePath,
+            $evidence,
+            (New-Object System.Text.UTF8Encoding($false)))
+    }
+    else {
+        Write-Warning 'The smoke test did not fully pass; existing successful evidence was preserved.'
+    }
 }
 
 Get-Content $evidencePath -Raw

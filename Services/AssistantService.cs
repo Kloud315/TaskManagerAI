@@ -1,3 +1,5 @@
+using TaskManagerAI.Models;
+
 namespace TaskManagerAI.Services;
 
 public class AssistantService
@@ -27,7 +29,7 @@ public class AssistantService
         };
 
         AssistantOutcome? lastListOutcome = null;
-        ListTasksExecution? lastListExecution = null;
+        List<TaskItem>? titleMatchesFromLookup = null;
 
         for (var turnNumber = 0; turnNumber < MaximumGeminiTurns; turnNumber++)
         {
@@ -75,7 +77,21 @@ public class AssistantService
                     return listExecution.Error;
                 }
 
-                lastListExecution = listExecution;
+                if (listExecution.TitleMatches is not null)
+                {
+                    titleMatchesFromLookup = listExecution.TitleMatches;
+                }
+
+                if (IsMutationIntent(message))
+                {
+                    var titleMatchError = _toolExecutor.ValidateTitleMatchesForMutation(
+                        titleMatchesFromLookup);
+                    if (titleMatchError is not null)
+                    {
+                        return titleMatchError;
+                    }
+                }
+
                 lastListOutcome = CreateOutcome(
                     AssistantOutcomeStatus.Success,
                     "list_tasks",
@@ -106,7 +122,7 @@ public class AssistantService
 
             return await _toolExecutor.ExecuteTaskFunctionAsync(
                 proposal,
-                lastListExecution?.TitleMatches,
+                titleMatchesFromLookup,
                 cancellationToken);
         }
 
@@ -114,6 +130,15 @@ public class AssistantService
             AssistantOutcomeStatus.CouldNotComplete,
             "none",
             "I couldn't safely complete that task request. Please try a more specific instruction.");
+    }
+
+    private static bool IsMutationIntent(string message)
+    {
+        return System.Text.RegularExpressions.Regex.IsMatch(
+            message,
+            @"\b(delete|remove|mark|complete|update|change|rename|set)\b",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase
+                | System.Text.RegularExpressions.RegexOptions.CultureInvariant);
     }
 
     public Task<AssistantOutcome> ConfirmDeleteAsync(

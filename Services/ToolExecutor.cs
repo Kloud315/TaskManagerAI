@@ -80,6 +80,37 @@ public class ToolExecutor
         };
     }
 
+    public AssistantOutcome? ValidateTitleMatchesForMutation(
+        List<TaskItem>? titleMatches)
+    {
+        if (titleMatches is null)
+        {
+            return null;
+        }
+
+        if (titleMatches.Count == 0)
+        {
+            return CreateOutcome(
+                AssistantOutcomeStatus.NotFound,
+                "none",
+                "No task matched that title.");
+        }
+
+        if (titleMatches.Count > 1)
+        {
+            var choices = string.Join(
+                "; ",
+                titleMatches.Select(task => $"{task.Id}: \"{task.Title}\""));
+            return CreateOutcome(
+                AssistantOutcomeStatus.Ambiguous,
+                "none",
+                $"I found multiple matching tasks: {choices}. Please specify the task ID.",
+                titleMatches);
+        }
+
+        return null;
+    }
+
     public async Task<AssistantOutcome> ExecuteTaskFunctionAsync(
         FunctionCallProposal proposal,
         List<TaskItem>? titleMatches,

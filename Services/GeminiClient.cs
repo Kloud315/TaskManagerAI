@@ -8,6 +8,7 @@ namespace TaskManagerAI.Services;
 
 public class GeminiClient : IGeminiClient
 {
+    private const int MaximumTransientRetries = 2;
     private const string GeminiApiBaseUrl =
         "https://generativelanguage.googleapis.com/v1beta/models/";
 
@@ -73,21 +74,51 @@ public class GeminiClient : IGeminiClient
         try
         {
             var model = Uri.EscapeDataString(_options.Model);
-            using var request = new HttpRequestMessage(
-                HttpMethod.Post,
-                $"{GeminiApiBaseUrl}{model}:generateContent");
-            request.Headers.Add("x-goog-api-key", _options.ApiKey);
-            request.Content = JsonContent.Create(requestBody);
-
-            using var response = await _httpClient.SendAsync(request, cancellationToken);
-            if (!response.IsSuccessStatusCode)
+            for (var attempt = 0; attempt <= MaximumTransientRetries; attempt++)
             {
-                throw new GeminiUnavailableException(
-                    $"Gemini returned HTTP status {(int)response.StatusCode}.");
+                using var request = new HttpRequestMessage(
+                    HttpMethod.Post,
+                    $"{GeminiApiBaseUrl}{model}:generateContent");
+                request.Headers.Add("x-goog-api-key", _options.ApiKey);
+                request.Content = JsonContent.Create(requestBody);
+
+                var shouldRetry = false;
+                using (var response = await _httpClient.SendAsync(request, cancellationToken))
+                {
+                    if (response.IsSuccessStatusCode)
+                    {
+                        var responseJson = await response.Content.ReadAsStringAsync(cancellationToken);
+                        return ParseGeminiTurn(responseJson);
+                    }
+
+                    if ((response.StatusCode is System.Net.HttpStatusCode.TooManyRequests
+                        or System.Net.HttpStatusCode.ServiceUnavailable)
+                        && attempt < MaximumTransientRetries)
+                    {
+                        _logger.LogWarning(
+                            "Gemini returned transient HTTP status {StatusCode}; retrying ({RetryNumber}/{MaximumRetries}).",
+                            (int)response.StatusCode,
+                            attempt + 1,
+                            MaximumTransientRetries);
+                        shouldRetry = true;
+                    }
+                    else
+                    {
+                        throw new GeminiUnavailableException(
+                            $"Gemini returned HTTP status {(int)response.StatusCode}.");
+                    }
+                }
+
+                if (shouldRetry)
+                {
+                    await Task.Delay(
+                        TimeSpan.FromSeconds(attempt + 1),
+                        cancellationToken);
+                }
             }
 
-            var responseJson = await response.Content.ReadAsStringAsync(cancellationToken);
-            return ParseGeminiTurn(responseJson);
+            throw new GeminiUnavailableException(
+                "Gemini remained unavailable after transient retries.");
         }
         catch (HttpRequestException exception)
         {

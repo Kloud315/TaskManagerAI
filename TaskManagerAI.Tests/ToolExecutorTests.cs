@@ -64,6 +64,74 @@ public class ToolExecutorTests
     }
 
     [Fact]
+    public void ValidateTitleMatchesForMutation_WithMultipleMatches_ReturnsAmbiguous()
+    {
+        var executor = CreateExecutor(new FakeTaskService());
+        var matches = new List<TaskItem>
+        {
+            new() { Id = 1, Title = "Finish report" },
+            new() { Id = 2, Title = "Review report" }
+        };
+
+        var outcome = executor.ValidateTitleMatchesForMutation(matches);
+
+        Assert.Equal(AssistantOutcomeStatus.Ambiguous, outcome?.Status);
+        Assert.Contains("multiple matching tasks", outcome!.Result);
+    }
+
+    [Fact]
+    public void ValidateTitleMatchesForMutation_WithNoMatches_ReturnsNotFound()
+    {
+        var executor = CreateExecutor(new FakeTaskService());
+
+        var outcome = executor.ValidateTitleMatchesForMutation([]);
+
+        Assert.Equal(AssistantOutcomeStatus.NotFound, outcome?.Status);
+        Assert.Contains("No task matched", outcome!.Result);
+    }
+
+    [Fact]
+    public void ValidateTitleMatchesForMutation_WithOneMatchAllowsExecution()
+    {
+        var executor = CreateExecutor(new FakeTaskService());
+
+        var outcome = executor.ValidateTitleMatchesForMutation(
+        [
+            new TaskItem { Id = 1, Title = "Finish report" }
+        ]);
+
+        Assert.Null(outcome);
+    }
+
+    [Fact]
+    public async Task AssistantStopsBeforeMutationWhenTitleLookupIsAmbiguous()
+    {
+        using var arguments = JsonDocument.Parse("""{"title_contains":"report"}""");
+        using var modelContent = JsonDocument.Parse("""{"role":"model"}""");
+        var taskService = new FakeTaskService
+        {
+            ExistingTasks =
+            [
+                new TaskItem { Id = 1, Title = "Finish report" },
+                new TaskItem { Id = 2, Title = "Review report" }
+            ]
+        };
+        var geminiClient = new FakeGeminiClient(new GeminiTurn(
+            CreateProposal("list_tasks", arguments),
+            modelContent.RootElement.Clone(),
+            string.Empty));
+        var assistant = new AssistantService(
+            geminiClient,
+            CreateExecutor(taskService));
+
+        var outcome = await assistant.HandleMessageAsync("Delete the report task");
+
+        Assert.Equal(AssistantOutcomeStatus.Ambiguous, outcome.Status);
+        Assert.Equal(1, geminiClient.CallCount);
+        Assert.Equal(0, taskService.DeleteCalls);
+    }
+
+    [Fact]
     public async Task DeleteTask_RequiresConfirmationBeforeDeleting()
     {
         var taskService = new FakeTaskService
@@ -108,6 +176,26 @@ public class ToolExecutorTests
             new DeleteConfirmationStore());
     }
 
+    private sealed class FakeGeminiClient : IGeminiClient
+    {
+            private readonly GeminiTurn _turn;
+
+            public FakeGeminiClient(GeminiTurn turn)
+            {
+                _turn = turn;
+            }
+
+            public int CallCount { get; private set; }
+
+            public Task<GeminiTurn> GetNextTurnAsync(
+                IReadOnlyList<object> conversation,
+                CancellationToken cancellationToken = default)
+            {
+                CallCount++;
+                return Task.FromResult(_turn);
+            }
+    }
+
     private sealed class FakeTaskService : ITaskService
     {
         public int CreateCalls { get; private set; }
@@ -116,10 +204,11 @@ public class ToolExecutorTests
         public int GetByIdCalls { get; private set; }
         public int? LastRequestedId { get; private set; }
         public TaskItem? ExistingTask { get; init; }
+        public List<TaskItem> ExistingTasks { get; init; } = [];
 
         public Task<List<TaskItem>> GetAllAsync(CancellationToken cancellationToken = default)
         {
-            return Task.FromResult(new List<TaskItem>());
+            return Task.FromResult(ExistingTasks.ToList());
         }
 
         public Task<TaskItem?> GetByIdAsync(

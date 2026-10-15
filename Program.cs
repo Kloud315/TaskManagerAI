@@ -25,7 +25,7 @@ builder.Services.Configure<GeminiOptions>(
     builder.Configuration.GetSection(GeminiOptions.SectionName));
 builder.Services.AddHttpClient<IGeminiClient, GeminiClient>(client =>
 {
-    client.Timeout = TimeSpan.FromSeconds(30);
+    client.Timeout = TimeSpan.FromSeconds(60);
 });
 builder.Services.AddScoped<ToolExecutor>();
 builder.Services.AddSingleton<DeleteConfirmationStore>();
